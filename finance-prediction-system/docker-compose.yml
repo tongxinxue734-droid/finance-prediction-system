@@ -1,0 +1,172 @@
+version: '3.8'
+
+services:
+  # 数据库服务
+  postgres:
+    image: postgres:14-alpine
+    container_name: fps_postgres
+    environment:
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-scripts/init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "${DB_PORT}:5432"
+    networks:
+      - fps_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis缓存服务
+  redis:
+    image: redis:7-alpine
+    container_name: fps_redis
+    ports:
+      - "${REDIS_PORT}:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - fps_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # API服务
+  api:
+    build:
+      context: ./backend/api
+      dockerfile: Dockerfile
+    container_name: fps_api
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - DB_NAME=${DB_NAME}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - API_PORT=${API_PORT}
+      - DATA_PROCESSOR_URL=http://data_processor:8001
+      - PREDICTION_SERVICE_URL=http://prediction_service:8002
+    ports:
+      - "${API_PORT}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - fps_network
+    restart: unless-stopped
+
+  # 数据采集服务
+  data_collector:
+    build:
+      context: ./backend/data_collector
+      dockerfile: Dockerfile
+    container_name: fps_data_collector
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - DB_NAME=${DB_NAME}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - FINANCE_API_KEY=${FINANCE_API_KEY}
+      - COLLECT_INTERVAL=${COLLECT_INTERVAL}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - fps_network
+    restart: unless-stopped
+
+  # 数据处理服务
+  data_processor:
+    build:
+      context: ./backend/data_processor
+      dockerfile: Dockerfile
+    container_name: fps_data_processor
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - DB_NAME=${DB_NAME}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - PORT=8001
+    ports:
+      - "8001:8001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - fps_network
+    restart: unless-stopped
+
+  # 预测服务
+  prediction_service:
+    build:
+      context: ./backend/prediction_service
+      dockerfile: Dockerfile
+    container_name: fps_prediction_service
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - DB_NAME=${DB_NAME}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - PORT=8002
+      - MODEL_DIR=/app/models
+    volumes:
+      - prediction_models:/app/models
+    ports:
+      - "8002:8002"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - fps_network
+    restart: unless-stopped
+
+  # 前端管理后台
+  frontend_admin:
+    build:
+      context: ./frontend/admin
+      dockerfile: Dockerfile
+    container_name: fps_frontend_admin
+    ports:
+      - "${ADMIN_PORT}:80"
+    depends_on:
+      - api
+    networks:
+      - fps_network
+    restart: unless-stopped
+
+networks:
+  fps_network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  prediction_models:
